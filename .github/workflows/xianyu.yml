@@ -1,0 +1,101 @@
+name: xianyu-dylib
+
+# 只用公开库的免费 macOS runner 编 dylib。
+# 源码在私有库 jiayuLian/xianyu-coin-tweak，构建时用 secret SRC_TOKEN checkout 过来 ——
+# 这个公开库里看不到 payload / 任何项目内容。
+
+on:
+  push:
+    paths: ['.github/workflows/xianyu.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dylib:
+    name: 编译 dylib
+    runs-on: macos-latest
+    steps:
+      - name: Checkout 私有源码库
+        uses: actions/checkout@v4
+        with:
+          repository: jiayuLian/xianyu-coin-tweak
+          token: ${{ secrets.SRC_TOKEN }}
+
+      - name: 安装 Theos + iOS SDK + ldid
+        run: |
+          set -e
+          export THEOS="$HOME/theos"
+          git clone --depth 1 --recursive https://github.com/theos/theos.git "$THEOS"
+          git clone --depth 1 https://github.com/theos/sdks.git /tmp/theos-sdks
+          mkdir -p "$THEOS/sdks"
+          cp -r /tmp/theos-sdks/iPhoneOS*.sdk "$THEOS/sdks/"
+          echo "--- sdks ---"; ls -1 "$THEOS/sdks"
+          echo "--- xcode ---"; xcodebuild -version
+          echo "--- clang ---"; clang --version | head -2
+          if ! command -v ldid >/dev/null 2>&1; then
+            brew install ldid || {
+              mkdir -p "$HOME/bin"
+              for a in ldid_macosx_arm64 ldid_macosx_universal ldid_macosx_x86_64; do
+                if curl -fsSL -o "$HOME/bin/ldid" \
+                   "https://github.com/ProcursusTeam/ldid/releases/latest/download/$a"; then
+                  chmod +x "$HOME/bin/ldid"; break
+                fi
+              done
+              echo "$HOME/bin" >> "$GITHUB_PATH"
+            }
+          fi
+          command -v ldid && (ldid -h 2>&1 | head -2 || true)
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          echo "$THEOS/bin" >> "$GITHUB_PATH"
+
+      - name: 烘 payload + 编译
+        run: |
+          set -e
+          python3 tools/gen_payload.py payload.js > RNAPayload.h
+          echo "RNAPayload.h: $(wc -c < RNAPayload.h) bytes"
+
+          VER=$(python3 -c "import re;m=re.search(r\"RNA_VER\s*=\s*'([^']+)'\",open('payload.js',encoding='utf-8').read());print(m.group(1) if m else 'noversion')")
+          echo "RNA_VER=$VER" >> "$GITHUB_ENV"
+          echo "payload 版本 = $VER"
+
+          make clean || true
+          make -j"$(sysctl -n hw.ncpu)" || {
+            echo "::warning::make 失败，列出 .theos 下的残留产物"
+            find .theos -name '*.dylib*' -exec ls -l {} \; || true
+            exit 1
+          }
+
+          DYLIB=$(find .theos -type f -name '*RNAXianyuCoin*.dylib' -not -path '*.dSYM/*' | head -1)
+          echo "--- 文件类型 ---"; file -b "$DYLIB"
+          echo "--- 加载命令 ---"; otool -L "$DYLIB"
+
+          if otool -L "$DYLIB" | grep -qi 'substrate'; then
+            echo "::error::dylib 仍依赖 CydiaSubstrate"; exit 1
+          fi
+          echo "OK: 无 substrate 依赖"
+
+          if ! grep -aq "RNA_VER = '$VER'" "$DYLIB"; then
+            echo "::error::dylib 内找不到版本标记 RNA_VER = '$VER'"; exit 1
+          fi
+          echo "OK: 版本标记 RNA_VER = '$VER' 已在 dylib 内"
+
+      - name: 收集 dylib
+        run: |
+          set -e
+          mkdir -p out
+          DYLIB=$(find .theos -type f -name '*RNAXianyuCoin*.dylib' -not -path '*.dSYM/*' | head -1)
+          [ -n "$DYLIB" ] || { echo "::error::没找到 RNAXianyuCoin.dylib"; exit 1; }
+          cp "$DYLIB" out/RNAXianyuCoin.dylib
+          ls -l out/
+          case "$(file -b out/RNAXianyuCoin.dylib)" in
+            *"dynamically linked shared library"*) echo "OK: MH_DYLIB" ;;
+            *) echo "::error::产物不是 dylib"; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RNAXianyuCoin-${{ env.RNA_VER }}-dylib
+          path: out/RNAXianyuCoin.dylib
+          if-no-files-found: error
