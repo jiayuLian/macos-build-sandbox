@@ -1,0 +1,59 @@
+name: reqable-blutter
+
+# 用免费 macOS runner 跑 Blutter，还原 Reqable Dart AOT 快照（类/函数/地址）。
+# 脱壳二进制在私有库 jiayuLian/reqable-crack-tweak 的 reqable_input/ 下，用 secret SRC_TOKEN checkout。
+# 产物（asm/、pp.txt、types.txt 等）打包上传 artifact。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Blutter 快照分析
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout 私有库（含脱壳二进制）
+        uses: actions/checkout@v4
+        with:
+          repository: jiayuLian/reqable-crack-tweak
+          token: ${{ secrets.SRC_TOKEN }}
+
+      - name: 安装 ninja + 克隆 Blutter
+        run: |
+          set -e
+          brew install ninja
+          ninja --version
+          cmake --version | head -1
+          python3 --version
+          git clone --depth 1 https://github.com/worawit/blutter.git "$HOME/blutter"
+          ls "$HOME/blutter"
+
+      - name: 运行 Blutter（含 Dart SDK 3.3.4 拉取与编译）
+        run: |
+          set -e
+          ls -l reqable_input/
+          file reqable_input/App reqable_input/Flutter
+          mkdir -p blutter_out
+          python3 "$HOME/blutter/blutter.py" "$(pwd)/reqable_input" "$(pwd)/blutter_out"
+          echo "--- 输出清单 ---"
+          find blutter_out -maxdepth 2 | head -40
+          du -sh blutter_out
+
+      - name: 打包
+        run: |
+          set -e
+          cd blutter_out
+          tar czf ../blutter_out.tar.gz .
+          cd ..
+          ls -lh blutter_out.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reqable-blutter-out
+          path: blutter_out.tar.gz
+          if-no-files-found: error
+          retention-days: 7
