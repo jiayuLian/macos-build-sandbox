@@ -25,6 +25,7 @@ jobs:
       - name: 安装 ninja + 克隆 Blutter
         run: |
           set -e
+          python3 -m pip install --user requests
           brew install ninja
           ninja --version
           cmake --version | head -1
