@@ -4,8 +4,6 @@ name: reqable-dylib
 # 源码在私有库 jiayuLian/reqable-crack-tweak，构建时用 secret SRC_TOKEN checkout 过来。
 
 on:
-  push:
-    paths: ['.github/workflows/reqable.yml']
   workflow_dispatch:
 
 permissions:
@@ -68,10 +66,10 @@ jobs:
           fi
           echo "OK: 无 substrate 依赖"
 
-          if ! strings "$DYLIB" | grep -q 'RQ_VER=rq1'; then
-            echo "::error::dylib 内找不到版本标记 RQ_VER=rq1"; exit 1
+          if ! strings "$DYLIB" | grep -q 'RQ_VER=rq2'; then
+            echo "::error::dylib 内找不到版本标记 RQ_VER=rq2"; exit 1
           fi
-          echo "OK: 版本标记 RQ_VER=rq1 已在 dylib 内"
+          echo "OK: 版本标记 RQ_VER=rq2 已在 dylib 内"
 
       - name: 收集 + adhoc 签名
         run: |
