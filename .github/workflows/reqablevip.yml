@@ -1,0 +1,92 @@
+name: reqablevip-dylib
+
+# 用公开库的免费 macOS runner 编 Reqable VIP dylib。
+# 源码在私有库 jiayuLian/reqable-vip-tweak —— 公开库里看不到任何内容。
+
+on:
+  push:
+    paths: ['.github/workflows/reqablevip.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dylib:
+    name: 编译 dylib
+    runs-on: macos-latest
+    steps:
+      - name: Checkout 私有源码库
+        uses: actions/checkout@v4
+        with:
+          repository: jiayuLian/reqable-vip-tweak
+          token: ${{ secrets.SRC_TOKEN }}
+
+      - name: 安装 Theos + iOS SDK + ldid
+        run: |
+          set -e
+          export THEOS="$HOME/theos"
+          git clone --depth 1 --recursive https://github.com/theos/theos.git "$THEOS"
+          git clone --depth 1 https://github.com/theos/sdks.git /tmp/theos-sdks
+          mkdir -p "$THEOS/sdks"
+          cp -r /tmp/theos-sdks/iPhoneOS*.sdk "$THEOS/sdks/"
+          echo "--- sdks ---"; ls -1 "$THEOS/sdks"
+          echo "--- xcode ---"; xcodebuild -version
+          echo "--- clang ---"; clang --version | head -2
+          if ! command -v ldid >/dev/null 2>&1; then
+            brew install ldid || {
+              mkdir -p "$HOME/bin"
+              for a in ldid_macosx_arm64 ldid_macosx_universal ldid_macosx_x86_64; do
+                if curl -fsSL -o "$HOME/bin/ldid" \
+                   "https://github.com/ProcursusTeam/ldid/releases/latest/download/$a"; then
+                  chmod +x "$HOME/bin/ldid"; break
+                fi
+              done
+              echo "$HOME/bin" >> "$GITHUB_PATH"
+            }
+          fi
+          command -v ldid && (ldid -h 2>&1 | head -2 || true)
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          echo "$THEOS/bin" >> "$GITHUB_PATH"
+
+      - name: 编译 + 硬闸
+        run: |
+          set -e
+          VER=$(grep -oE "RNA_VER = '[^']+'" Tweak.m | head -1 | sed "s/.*'\(.*\)'/\1/")
+          echo "RNA_VER=$VER" >> "$GITHUB_ENV"
+          echo "版本标记 = $VER"
+
+          make clean || true
+          make -j"$(sysctl -n hw.ncpu)" || {
+            echo "::warning::make 失败，列出残留产物"
+            find .theos -name '*.dylib*' -exec ls -l {} \; || true
+            exit 1
+          }
+
+          DYLIB=$(find .theos -type f -name '*RNAReqableVIP*.dylib' -not -path '*.dSYM/*' | head -1)
+          echo "--- 文件类型 ---"; file -b "$DYLIB"
+          echo "--- 加载命令 ---"; otool -L "$DYLIB"
+
+          if otool -L "$DYLIB" | grep -qi 'substrate'; then
+            echo "::error::dylib 仍依赖 CydiaSubstrate"; exit 1
+          fi
+          echo "OK: 无 substrate 依赖"
+
+          if ! grep -aq "RNA_VER = '$VER'" "$DYLIB"; then
+            echo "::error::dylib 内找不到版本标记"; exit 1
+          fi
+          echo "OK: 版本标记已在 dylib 内"
+
+          mkdir -p out
+          cp "$DYLIB" out/RNAReqableVIP.dylib
+          ls -l out/
+          case "$(file -b out/RNAReqableVIP.dylib)" in
+            *"dynamically linked shared library"*) echo "OK: MH_DYLIB" ;;
+            *) echo "::error::产物不是 dylib"; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RNAReqableVIP-${{ env.RNA_VER }}-dylib
+          path: out/RNAReqableVIP.dylib
+          if-no-files-found: error
